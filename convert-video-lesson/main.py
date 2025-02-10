@@ -2,7 +2,8 @@ import os
 import sqlite3
 import subprocess
 import zipfile
-from PySide6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QMessageBox, QLineEdit, QLabel, QProgressBar, QComboBox)
+from PySide6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QMessageBox, 
+                               QLineEdit, QLabel, QProgressBar, QComboBox)
 from PySide6.QtCore import QThread, Signal
 
 
@@ -24,7 +25,6 @@ class Database:
         )
         conn.commit()
 
-        # Thêm URL nếu chưa có
         cursor.execute("SELECT COUNT(*) FROM url_settings")
         if cursor.fetchone()[0] == 0:
             cursor.executemany(
@@ -71,7 +71,7 @@ class FFmpegWorker(QThread):
             output_folder = self.convert_video()
             self.progress.emit(70)
 
-            zip_file, total_files = self.zip_output(output_folder, duration_file)
+            zip_file, _ = self.zip_output(output_folder, duration_file)
             self.progress.emit(100)
 
             self.finished.emit(zip_file)
@@ -124,10 +124,8 @@ class FFmpegWorker(QThread):
     def zip_output(self, output_folder, duration_file):
         zip_filename = f"{output_folder}.zip"
         with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
-            files = []
             for root, _, filenames in os.walk(output_folder):
                 for file in filenames:
-                    files.append(os.path.join(root, file))
                     zipf.write(os.path.join(root, file), arcname=file)
 
             zipf.write("enc.key", arcname="enc.key")
@@ -135,14 +133,14 @@ class FFmpegWorker(QThread):
             if duration_file:
                 zipf.write("duration.txt", arcname="duration.txt")
 
-            return zip_filename, len(files) + 3
+        return zip_filename, len(os.listdir(output_folder))
 
 
 class HLSConverter(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HLS Video Converter")
-        self.setGeometry(100, 100, 500, 300)
+        self.setGeometry(100, 100, 500, 350)
 
         self.layout = QVBoxLayout()
 
@@ -159,15 +157,24 @@ class HLSConverter(QWidget):
         self.layout.addWidget(self.url_selector)
         self.load_urls()
 
-        self.choose_file_button = QPushButton("Chọn Video & Convert")
-        self.choose_file_button.clicked.connect(self.process_video)
+        self.file_label = QLabel("Chưa chọn file")
+        self.layout.addWidget(self.file_label)
+
+        self.choose_file_button = QPushButton("Chọn Video")
+        self.choose_file_button.clicked.connect(self.choose_video)
         self.layout.addWidget(self.choose_file_button)
+
+        self.run_button = QPushButton("Chạy")
+        self.run_button.setEnabled(False)
+        self.run_button.clicked.connect(self.process_video)
+        self.layout.addWidget(self.run_button)
 
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setValue(0)
         self.layout.addWidget(self.progress_bar)
 
         self.setLayout(self.layout)
+        self.video_path = None
 
     def load_urls(self):
         urls = Database.get_urls()
@@ -175,12 +182,19 @@ class HLSConverter(QWidget):
         if "https://e-linkpower.hcm.s3storage.vn/videos/khoa-hoc" in urls:
             self.url_selector.setCurrentText("https://e-linkpower.hcm.s3storage.vn/videos/khoa-hoc")
 
+    def choose_video(self):
+        video_path, _ = QFileDialog.getOpenFileName(self, "Chọn file video", "", "MP4 Files (*.mp4)")
+        if video_path:
+            self.video_path = video_path
+            self.file_label.setText(f"Đã chọn: {os.path.basename(video_path)}")
+            self.run_button.setEnabled(True)
+
     def update_progress(self, value):
         self.progress_bar.setValue(value)
 
     def process_video(self):
-        video_path, _ = QFileDialog.getOpenFileName(self, "Chọn file video", "", "MP4 Files (*.mp4)")
-        if not video_path:
+        if not self.video_path:
+            QMessageBox.warning(self, "Cảnh báo", "Bạn chưa chọn file video!")
             return
 
         lesson_id = self.lesson_id_input.text().strip()
@@ -188,15 +202,21 @@ class HLSConverter(QWidget):
             QMessageBox.warning(self, "Cảnh báo", "Bạn cần nhập Lesson ID!")
             return
 
-        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        video_name = os.path.splitext(os.path.basename(self.video_path))[0]
         base_url = self.url_selector.currentText()
 
-        self.worker = FFmpegWorker(video_path, lesson_id, video_name, base_url)
+        self.choose_file_button.setEnabled(False)
+        self.run_button.setEnabled(False)
+
+        self.worker = FFmpegWorker(self.video_path, lesson_id, video_name, base_url)
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_conversion_finished)
         self.worker.start()
 
     def on_conversion_finished(self, result):
+        self.choose_file_button.setEnabled(True)
+        self.run_button.setEnabled(True)
+
         if "Lỗi" in result:
             QMessageBox.critical(self, "Lỗi", result)
         else:
